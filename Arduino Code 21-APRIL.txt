@@ -1,0 +1,548 @@
+//_____________________________________________________________________Variables and Imports____________________________________________________________________________________________
+
+#include <Adafruit_NeoPixel.h>
+#include <ArduinoJson.h>
+#include <SPI.h>
+#include <ESP8266WiFi.h>
+#include <ESP8266mDNS.h>
+#include <WiFiUdp.h>
+#include <SPI.h>
+#include <MFRC522.h>
+
+#define SS_PIN D0
+#define RST_PIN D3
+#define MOSI_PIN D7
+#define MISO_PIN D6
+#define SCK_PIN D5
+#define LEDPIN D1
+#define RBUFFSIZE 600
+#define fsrPin A0 // might not work test first
+#define COOASTER_ID 1
+
+//VARIABLES
+
+// WIFI
+const char* ssid = "bierviltje"; //bierviltje //Marieta
+const char* password = "HahaBier!01"; //HahaBier!01  //M1M102CF82EC8AF
+
+// API DATA
+int parseTry = 0;
+int id1;
+const char* name2;
+String DataStatus;
+char responseBuffer[RBUFFSIZE];
+int  rbindex = 0;
+boolean startCapture;
+/*char PostData[] =  "{\"userId\": \"420\", \"id\": 420, \"title\": foo, \"body\": HELLO}";*/
+String PostData = "userId=420&id=420&title=foo&body=HELLO";
+const char* url = "https://jsonplaceholder.typicode.com";
+
+// DATA OUTPUT
+/*char* global_name;
+char* global_brand;*/
+float global_price;
+int global_minWeight;
+int global_maxWeight;
+int global_red;
+int global_green;
+int global_blue;
+
+//server ip or domainname
+const char server[] = "10.42.0.1";//10.42.0.1
+
+//RFID
+String globalTag;
+
+// PRESSURE
+
+  //checkWeight
+int fsrReading;
+int oldWeight;
+int coasterStandardWeight = 20;
+boolean lifted = true;
+boolean empty = true;
+boolean check;
+int redWeight;
+int newBierWeight;
+boolean registerBier = true;
+
+String coasterStatus;
+
+  // getAverageWeight
+int totalWeight = 0;
+int weightCount = 0;
+int averageWeight;
+int bierLowThreshold = 0;
+
+
+//MISC
+String currentstatus = "weight";
+
+
+WiFiClient client;
+
+Adafruit_NeoPixel strip = Adafruit_NeoPixel(6, LEDPIN, NEO_GRB + NEO_KHZ800);
+
+MFRC522 rfid(SS_PIN, RST_PIN); // Instance of the class
+MFRC522::MIFARE_Key key;
+
+// Init array that will store new NUID
+byte nuidPICC[4];
+
+// MEASUREMENTS weight
+  // EMPTY COASTER = 6
+  // EMPTY BEER GLASS = 148/183 MAINLY 170
+  // HALF FULL =   /320    mainly 260 299 305    longest 248
+
+//______________________________________________________________FUNCTIONS______________________________________________________________________________________________________
+
+
+// blinking leds
+
+void blink(int red, int green, int blue){
+  for (int i=0; i <= 5; i++)
+  {
+    strip.setPixelColor(i, red,green,blue);
+    strip.show();
+  }
+  delay(200);
+  for (int i=0; i <= 5; i++)
+  {
+    strip.setPixelColor(i, 0,0,0);
+    strip.show();
+  }
+  delay(200);
+  for (int i=0; i <= 5; i++)
+  {
+    strip.setPixelColor(i, red,green,blue);
+    strip.show();
+  }
+  delay(200);
+  for (int i=0; i <= 5; i++)
+  {
+    strip.setPixelColor(i, 0,0,0);
+    strip.show();
+  }
+}
+
+//______________________________________________________________GETTING AND POSTING DATA_____________________________________________________________________________________________________
+
+
+void post_Data(){
+
+  if (client.connect(url, 80)) {
+    Serial.println("sending Data");
+    client.println("POST /posts HTTP/1.1");
+    client.println("Host: https://jsonplaceholder.typicode.com");
+    client.println("User-Agent: Arduino/1.0");
+    client.println("Connection: close");
+    client.println("Content-Type: application/json;charset=utf-8");
+    client.print("Content-Length: ");
+    client.println(PostData.length()); //PostData.length() . strlen(PostData)
+    client.println();
+    client.println(PostData);
+
+    long interval = 2000;
+    unsigned long currentMillis = millis(), previousMillis = millis();
+
+    while(!client.available()){
+
+      if( (currentMillis - previousMillis) > interval ){
+
+        Serial.println("Timeout");
+        client.stop();
+        return;
+      }
+      currentMillis = millis();
+    }
+
+    while (client.connected())
+    {
+      if ( client.available() )
+      {
+        String str=client.readString();
+       Serial.println(str);
+      }
+    }
+
+  }
+
+
+}
+void connect_get(){
+  // if you get a connection, report back via serial:
+  if (client.connect(server, 8000))
+  {
+
+    String html_cmd1 = "GET /api/tag/2/" + globalTag + " HTTP/1.1";
+    const String html_cmd2 = "Host: 10.42.0.1";
+    const String html_cmd3 = "Connection: close";
+
+    //You can comment the following 3 lines
+    //Serial.println(" " + html_cmd1);
+    //Serial.println(" " + html_cmd2);
+    //Serial.println(" " + html_cmd3);
+
+    // Make a HTTP request:
+    client.println(html_cmd1);
+    client.println(html_cmd2);
+    client.println(html_cmd3);
+    client.println();
+
+    responseBuffer[0] = '\0';
+    rbindex = 0;
+
+    startCapture = false;
+  }
+  else
+  {
+    // if you didn't get a connection to the server:
+    Serial.println("Connection failed!");
+  }
+}
+void getData(){
+  //  CONNECTING TO SERVER
+  if (client.connect(server, 8000))
+  {
+
+    String html_cmd1 = "GET /api/tag/1/22127b6f HTTP/1.1"; //GET /api/tag/2/" + globalTag + " HTTP/1.1
+    const String html_cmd2 = "Host: 10.42.0.1";
+    const String html_cmd3 = "Connection: close";
+
+    //You can comment the following 3 lines
+    //Serial.println(" " + html_cmd1);
+    //Serial.println(" " + html_cmd2);
+    //Serial.println(" " + html_cmd3);
+
+    // Make a HTTP request:
+    client.println(html_cmd1);
+    client.println(html_cmd2);
+    client.println(html_cmd3);
+    client.println();
+
+    responseBuffer[0] = '\0';
+    rbindex = 0;
+
+    startCapture = false;
+    Serial.println();
+  }
+  else
+  {
+    // if you didn't get a connection to the server:
+    Serial.println("Connection failed!");
+  }
+
+  // GETTING DATA
+  if (client.available())
+  {
+    char c = client.read();
+    if(c == '{') {
+      startCapture=true;
+    }
+
+    if(startCapture && rbindex < RBUFFSIZE) {
+      responseBuffer[rbindex] = c;
+      rbindex++;
+    }
+  }
+
+  // if the server's disconnected, stop the client:
+  if (!client.connected()) {
+
+
+    //Serial.print("Received bytes");
+    //Serial.print(strlen(responseBuffer));
+    client.stop();
+    client.flush();
+
+    //Serial.println(responseBuffer);
+
+    Serial.println();
+
+    StaticJsonBuffer<500> jsonBuffer;
+
+    JsonObject& root = jsonBuffer.parseObject(responseBuffer);
+
+    if (!root.success()) {
+      Serial.println("parseObject() failed");
+    }  else {
+
+      int id = root["id"]; // 1
+      const char* name = root["name"]; // "Heineken"
+      const char* brand = root["brand"]; // "Heineken "
+      float price = root["price"]; // 1.23
+      int minWeight = root["minWeight"]; // 100
+      int maxWeight = root["maxWeight"]; // 500
+      int red = root["red"]; // 0
+      int green = root["green"]; // 255
+      int blue = root["blue"]; // 0
+
+      for (int i=0; i <= 5; i++)
+      {
+        strip.setPixelColor(i, red,green,blue);
+        strip.show();
+        delay(100);
+      }
+
+      Serial.println(name);
+      Serial.println(brand);
+      Serial.println(price);
+      Serial.println(red);
+      Serial.println(green);
+      Serial.println(blue);
+      globalTag = "none";
+
+      currentstatus = "weight";
+
+
+    }
+    // do nothing forevermore:
+  }
+}
+
+
+//_____________________________________________________________________READING AND PRINTING RFID____________________________________________________________________________________________
+
+void printHex(byte *buffer, byte bufferSize) {
+  String tag;
+  int gewicht = 400;
+  for (byte i = 0; i < bufferSize; i++) {
+
+   tag +=  String(buffer[i], HEX);
+
+  }
+  globalTag = tag;
+  Serial.println(globalTag);
+  currentstatus = "getData";
+  blink(0,0,255);
+}
+
+void readTag(){
+  /*for (int i=0; i <= 5; i++)
+  {
+    strip.setPixelColor(i, 0,0,255);
+    strip.show();
+    delay(100);
+  }*/
+
+  if ( ! rfid.PICC_IsNewCardPresent())
+    return;
+
+  // Verify if the NUID has been readed
+  if ( ! rfid.PICC_ReadCardSerial())
+    return;
+
+  printHex(rfid.uid.uidByte, rfid.uid.size);
+
+   // Halt PICC
+  rfid.PICC_HaltA();
+
+  // Stop encryption on PCD
+  rfid.PCD_StopCrypto1();
+
+}
+//_____________________________________________________________________ GETTING AND COMPARING WEIGHT_______________________________________________________________________________________________
+int getWeight(){
+
+  for (int i=1; i <=11 ; i++){
+
+    //digitalWrite(energyPin, HIGH);
+    fsrReading = analogRead(fsrPin);
+    //digitalWrite(energyPin, LOW);
+
+    totalWeight = totalWeight + fsrReading;
+    averageWeight = totalWeight / i;
+
+   }
+
+  totalWeight = 0;
+
+  return averageWeight ;
+
+}
+
+void checkBeer()
+{
+
+  if (getWeight()> redWeight + 90 && registerBier == true)
+  {
+    //NEW BIER
+    newBierWeight = getWeight();
+    redWeight = newBierWeight / 2;
+    registerBier = false;
+    Serial.println("NEW BEER");
+    currentstatus = "rfid";
+
+  }
+  else if(getWeight() < redWeight){
+    //bier LOW
+    registerBier = true;
+    Serial.println("Bier LOW");
+  }
+  else
+  {
+    Serial.println("Same beer");
+    delay(1000);
+  }
+
+}
+//_____________________________________________________________________ OLD GETTING AND COMPARING WEIGHT_______________________________________________________________________________________________
+
+
+/*
+int getAverageWeight(){
+  if avg == 0
+   return old
+   if total/count > 0 & count = 10
+   return averageWeight
+  digitalWrite(fsrPin, HIGH);
+  digitalWrite(fsrPin, LOW);
+  delay(50);
+
+
+  fsrReading = analogRead(fsrPin);
+
+  totalWeight = totalWeight + fsrReading;
+  weightCount = weightCount + 1;
+  averageWeight = totalWeight / weightCount;
+
+  if (fsrReading > averageWeight + 100 || fsrReading < averageWeight - 100){
+
+    totalWeight = 0;
+    weightCount = 0;
+    return oldWeight;
+  }
+
+  else if (weightCount == 20){
+    totalWeight = 0;
+    return averageWeight;
+
+  }
+
+
+}
+
+void checkWeight(){
+    int averageWeight = getAverageWeight();
+
+    if (averageWeight < coasterStandardWeight + 20)
+    {
+      Serial.println("nothing on coaster");
+
+      for (int i=0; i <= 5; i++)
+      {
+        strip.setPixelColor(i, 255,255,255);
+        strip.show();
+      }
+      //NOTHING ON THE COASTER
+    }
+    else if (averageWeight > oldWeight + 90 && empty == true )
+    {
+      Serial.println("new bier");
+      currentstatus = "rfid";
+      oldWeight = averageWeight;
+      empty = false;
+
+      blink(0,255,0);
+      delay(1000);
+      // NEW BIER
+    }
+    else if (averageWeight < 210 && averageWeight > coasterStandardWeight + 20)
+    {
+      Serial.println("bier low");
+      oldWeight = averageWeight;
+      empty = true;
+
+      for (int i=0; i <= 5; i++)
+      {
+        strip.setPixelColor(i, 255,0,0);
+        strip.show();
+      }
+      // bier low
+    }
+    else
+    {
+      Serial.println("same bear");
+      empty = false;
+      //oldWeight = averageWeight;
+
+      for (int i=0; i <= 5; i++)
+      {
+        strip.setPixelColor(i, 255,255,0);
+        strip.show();
+      }      // SAME BIER
+    }
+
+    Serial.print("Average Weight:");
+    Serial.println(averageWeight);
+    Serial.print("Old Weight:");
+    Serial.println(oldWeight);
+    Serial.println(" ");
+}*/
+
+
+//__________________________________________________________________SETUP__________________________________________________________________________________________________
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(fsrPin, INPUT);
+
+  //LED SETUP
+  strip.begin();
+  strip.show();
+
+  // WIFI SETUP
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  Serial.println("");
+
+  while (WiFi.status() != WL_CONNECTED)
+    {
+      delay(500);
+      Serial.print(".");
+    }
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  blink(0,255,0);
+  connect_get();
+
+  // RFID SETUP
+  SPI.begin(); // Init SPI bus
+  rfid.PCD_Init(); // Init MFRC522
+  for (byte i = 0; i < 6; i++)
+  {
+    key.keyByte[i] = 0xFF;
+  }
+  Serial.println("Begin");
+  oldWeight = analogRead(fsrPin);
+}
+
+
+
+//__________________________________________________________________MAIN LOOP__________________________________________________________________________________________________
+
+void loop(){
+
+  /*Serial.println(getAverageWeight());
+  checkWeight();
+  delay(100);*/
+
+
+  if (currentstatus == "weight")
+  {
+    checkBeer();
+  }
+  else if (currentstatus == "rfid")
+  {
+    Serial.println("checking tag");
+    readTag();
+  }
+  else if (currentstatus == "getData")
+  {
+    getData();
+    //post_Data();
+  }
+  delay(200);
+
+}
