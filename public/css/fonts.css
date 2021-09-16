@@ -1,0 +1,32 @@
+@font-face {
+   font-family:OpenSans-Semibold;
+   src: url('fonts/OpenSans-Semibold.ttf?#iefix') format('truetype');
+}
+
+@font-face {
+   font-family:OpenSans-Regular;
+   src: url('fonts/OpenSans-Regular.ttf?#iefix') format('truetype');
+}
+
+@font-face {
+    font-family:OpenSans-SemiboldIE;
+    src: url('fonts/open-sans-semiBold.eot');
+}
+
+@font-face {
+    font-family:OpenSans-RegularIE;
+    src: url('fonts/open-sans.eot');
+}
+
+@font-face {
+   font-family:HANNA;
+   src: url('fonts/HANNA.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Material Icons';
+  font-style: normal;
+  font-weight: 400;
+  src: url('fonts/Icons.woff');
+
+}
